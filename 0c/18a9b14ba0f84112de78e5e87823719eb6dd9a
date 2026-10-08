@@ -1,0 +1,14 @@
+deploy.readme.md
+  h_c7c52bcf9e03a5 1-286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0c18a9b14ba0f84112de78e5e87823719eb6dd9a",
+  "prompts": {},
+  "humans": {
+    "h_c7c52bcf9e03a5": {
+      "author": "wangyong27 <wangyong27@lenovo.com>"
+    }
+  }
+}
