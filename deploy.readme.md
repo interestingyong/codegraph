@@ -20,8 +20,9 @@
 | 认证 | Bearer token（必须）。存于服务器 `/home/lenovo/.codegraph-http-token`，下文以 `<TOKEN>` 代称 |
 | 二进制 | `/home/lenovo/codegraph-linux-x64/`（自包含包，57MB，wasm 提取路径，无需原生内核） |
 | 命令 | `~/.local/bin/codegraph`（已入 PATH，版本 1.6.2） |
-| 索引项目 | `/home/lenovo/xds_dev_codegraph`（xds `origin/dev` 镜像；`git pull` 后 watcher 自动同步索引） |
-| 日志 | `/home/lenovo/codegraph-http.log` |
+| 索引项目 | `/home/lenovo/xds_dev_codegraph`（xds `origin/dev` 镜像） |
+| 索引更新 | `codegraph git-sync` 服务每 60s fetch+fast-forward；merge 后 serve 的 watcher 自动同步索引 |
+| 服务日志 | MCP: `/home/lenovo/codegraph-http.log`；git-sync: `/tmp/log/codegraph-git-sync.log`（重启即弃，只保留增量痕迹） |
 
 ## 2. 从零部署（任意 Linux x64 目标机）
 
@@ -74,7 +75,21 @@ nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegra
 # 启动成功日志: [CodeGraph MCP] Streamable HTTP listening on http://0.0.0.0:3916/mcp
 ```
 
-### 2.5 验证（见 §4.10 curl）
+### 2.5 启动 git-sync 镜像跟随服务（每分钟自动 pull）
+
+```bash
+mkdir -p /tmp/log
+nohup codegraph git-sync ~/xds_dev_codegraph --branch dev \
+  --interval-sec 60 --mode hard \
+  >> /tmp/log/codegraph-git-sync.log 2>&1 &
+# 启动日志: [git-sync] <时间> watching <路径>: origin/dev every 60s (mode: hard)
+# 每次实际更新打一行: [git-sync] <时间> dev: <旧commit> -> <新commit> (N files changed, ff) "<提交标题>"
+```
+
+`--mode hard` 的取舍：xds 的 dev 偶尔被 force-push，ff-only 模式会永远卡在分叉点；
+hard 模式直接 reset 到远端 tip（镜像语义）。未跟踪文件（`.codegraph/` 索引）不受影响。
+
+### 2.6 验证（见 §4.10 curl）
 
 无 token → 401；initialize → 200 + `Mcp-Session-Id`；tools/call explore 能查到真实结果。
 
@@ -269,18 +284,44 @@ SDK 自动协商）；SDK 客户端均容忍 GET 405 与会话过期 404（自�
 ## 5. 运维
 
 ```bash
-# 更新索引（服务不用重启，watcher 自动同步）:
-cd ~/xds_dev_codegraph && git pull origin dev
+# 索引随代码自动更新: git-sync 每分钟 fetch+merge, serve 的 watcher 自动重索引, 无需人工。
+
+# 手动立即同步一次（等不了下一分钟时）:
+codegraph git-sync ~/xds_dev_codegraph --branch dev --mode hard --once
+
+# git-sync 日志（只记变更, 无变更不打; /tmp/log 重启即弃）:
+tail -f /tmp/log/codegraph-git-sync.log
 
 # 服务重启（如机器重启后）:
 export PATH="$HOME/.local/bin:$PATH" CODEGRAPH_HTTP_AUTH_TOKEN=$(cat ~/.codegraph-http-token)
 nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegraph \
   >> ~/codegraph-http.log 2>&1 &
+mkdir -p /tmp/log
+nohup codegraph git-sync ~/xds_dev_codegraph --branch dev \
+  --interval-sec 60 --mode hard \
+  >> /tmp/log/codegraph-git-sync.log 2>&1 &
 
-# 状态/日志:
+# 状态:
 ss -tlnp | grep 3916
-tail -f ~/codegraph-http.log
+ps aux | grep -E 'serve --http|git-sync' | grep -v grep
 
-# 升级二进制: 重新构建上传（§2.1-2.2），停旧进程再启动（§2.4）。索引数据无需重建，
+# 升级二进制: 重新构建上传（§2.1-2.2），停旧进程再启动（§2.4-2.5）。索引数据无需重建，
 # 与二进制版本兼容。
 ```
+
+### git-sync 参数
+
+```
+codegraph git-sync [path] [--branch <b>] [--remote <r>] [--interval-sec <n>]
+                   [--mode ff-only|hard] [--once]
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--branch` | 跟踪的远端分支（默认当前检出分支；detached HEAD 必须显式指定） |
+| `--remote` | fetch 的远端（默认 origin） |
+| `--interval-sec` | 探测间隔秒数（默认 60） |
+| `--mode` | 分叉处理：`ff-only`（跳过并告警，默认）/ `hard`（reset 到远端 tip，适合被 force-push 的镜像） |
+| `--once` | 单次同步即退出（cron 场景） |
+
+行为要点：fetch 失败只记错误日志、下一分钟重试（不退出）；配置错误（非 git 仓库/远端不存在/分支不存在）启动即退出；merge 只动跟踪文件，`.codegraph/` 等未跟踪文件永不受影响；git 永不弹凭证提示（`GIT_TERMINAL_PROMPT=0`），无人值守安全。

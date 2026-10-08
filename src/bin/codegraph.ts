@@ -1057,6 +1057,89 @@ program
   });
 
 /**
+ * codegraph git-sync [path]
+ *
+ * Keep a git mirror tracking a remote branch — the deployment companion to
+ * `serve --http`: fetch + fast-forward on a fixed interval, so a shared index
+ * always reads the latest code without anyone pulling by hand. The serve
+ * process's file watcher re-indexes whatever the merge touches; this command
+ * never touches `.codegraph/` itself. Logs one line per applied change
+ * (timestamp, old -> new commit, files changed).
+ */
+program
+  .command('git-sync [path]')
+  .description('Keep a git worktree tracking a remote branch (fetch + fast-forward on an interval) — pairs with serve --http so a shared index always reads the latest code')
+  .option('-b, --branch <branch>', 'Branch to track on the remote (default: the checked-out branch)')
+  .option('-r, --remote <remote>', 'Remote to fetch from (default: origin)')
+  .option('-i, --interval-sec <seconds>', 'Seconds between checks (default: 60)', (v: string) => parseInt(v, 10))
+  .option('-m, --mode <mode>', 'Diverged-head handling: ff-only (warn and skip) or hard (reset --hard to the remote tip, for mirrors whose remote force-pushes). Default: ff-only')
+  .option('--once', 'Run a single sync and exit (cron-style)')
+  .action(async (pathArg: string | undefined, options: {
+    branch?: string;
+    remote?: string;
+    intervalSec?: number;
+    mode?: string;
+    once?: boolean;
+  }) => {
+    const repoPath = path.resolve(pathArg || process.cwd());
+    const {
+      runGitMirrorSyncOnce,
+      runGitMirrorService,
+      validateMirror,
+      resolveTrackingBranch,
+      formatSyncLogLine,
+      GitMirrorConfigError,
+    } = await import('../sync/git-mirror');
+
+    let mode: 'ff-only' | 'hard' = 'ff-only';
+    if (options.mode) {
+      if (options.mode !== 'ff-only' && options.mode !== 'hard') {
+        error(`Invalid --mode '${options.mode}' — use ff-only or hard`);
+        process.exit(1);
+      }
+      mode = options.mode;
+    }
+    if (options.intervalSec !== undefined && (Number.isNaN(options.intervalSec) || options.intervalSec < 1)) {
+      error('--interval-sec must be a positive integer');
+      process.exit(1);
+    }
+
+    try {
+      const branch = resolveTrackingBranch(repoPath, options.branch);
+      validateMirror(repoPath, options.remote ?? 'origin', branch);
+
+      if (options.once) {
+        const result = await runGitMirrorSyncOnce({
+          repoPath, remote: options.remote, branch: options.branch, mode,
+        });
+        console.log(formatSyncLogLine(result, branch));
+        if (result.kind === 'error') process.exit(1);
+        return;
+      }
+
+      const { started, handle } = runGitMirrorService({
+        repoPath, remote: options.remote, branch: options.branch, mode,
+        intervalSec: options.intervalSec,
+      });
+      await started;
+
+      const shutdown = (sig: string): void => {
+        console.log(`[git-sync] received ${sig}, stopping`);
+        void handle.stop().then(() => process.exit(0));
+      };
+      process.on('SIGINT', () => shutdown('SIGINT'));
+      process.on('SIGTERM', () => shutdown('SIGTERM'));
+    } catch (err) {
+      if (err instanceof GitMirrorConfigError) {
+        error(err.message);
+        process.exit(1);
+      }
+      error(`git-sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * The `status` warnings for indexed files whose symbols are missing although
  * their content is current (#2335, #2336): one line per group, saying what is
  * wrong, what to do, and naming up to three of the files.
