@@ -1,0 +1,20 @@
+CHANGELOG.md
+  h_c7c52bcf9e03a5 15-18
+__tests__/mcp-http-transport.test.ts
+  h_c7c52bcf9e03a5 1-389
+src/bin/codegraph.ts
+  h_c7c52bcf9e03a5 2210-2214,2216-2225,2235-2313,2340-2341
+src/mcp/http-server.ts
+  h_c7c52bcf9e03a5 1-753
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6abbf43acf1dc869f7f6684b936836143417684",
+  "prompts": {},
+  "humans": {
+    "h_c7c52bcf9e03a5": {
+      "author": "wangyong27 <wangyong27@lenovo.com>"
+    }
+  }
+}
