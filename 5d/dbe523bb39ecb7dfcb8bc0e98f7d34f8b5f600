@@ -1,0 +1,22 @@
+CHANGELOG.md
+  h_c7c52bcf9e03a5 18
+__tests__/git-mirror.test.ts
+  h_c7c52bcf9e03a5 1-264
+deploy.readme.md
+  h_c7c52bcf9e03a5 23-25,78-92,287-293,299-302,304,306,308,311-327
+src/bin/codegraph.ts
+  h_c7c52bcf9e03a5 1059-1141
+src/sync/git-mirror.ts
+  h_c7c52bcf9e03a5 1-373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5ddbe523bb39ecb7dfcb8bc0e98f7d34f8b5f600",
+  "prompts": {},
+  "humans": {
+    "h_c7c52bcf9e03a5": {
+      "author": "wangyong27 <wangyong27@lenovo.com>"
+    }
+  }
+}
