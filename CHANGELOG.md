@@ -12,6 +12,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- `codegraph serve --http` runs the MCP server over standard Streamable HTTP (protocol revision 2025-06-18) instead of stdio, so remote MCP clients can use one centrally deployed CodeGraph — and its single index — without a local install. Sessions are managed with the standard `Mcp-Session-Id` header, `--host` / `--port` control the bind address (loopback by default), `--allowed-origins` gates which browser origins may call it, and `--auth-token` requires a bearer token before anything is served — strongly recommended whenever the server is bound somewhere other than loopback.
+
 ### Fixes
 
 - In VB.NET, every member of a `Structure` is now indexed, including its fields, properties, methods, constructors and nested enums. Before, only the first member was, so the rest could not be found and their callers looked empty.

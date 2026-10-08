@@ -2207,8 +2207,22 @@ program
   .description('Start CodeGraph as an MCP server for AI assistants')
   .option('-p, --path <path>', 'Project path (optional for MCP mode, uses rootUri from client)')
   .option('--mcp', 'Run as MCP server (stdio transport)')
+  .option('--http', 'Run as an MCP server over Streamable HTTP (spec 2025-06-18) instead of stdio — remote clients connect with POST <url>/mcp')
+  .option('--host <host>', 'Streamable HTTP bind address (default 127.0.0.1; 0.0.0.0 exposes on all interfaces)')
+  .option('--port <port>', 'Streamable HTTP port (default 3916)', (v: string) => parseInt(v, 10))
+  .option('--allowed-origins <origins>', 'Comma-separated Origin values the HTTP transport accepts (* disables validation; loopback origins always pass)')
+  .option('--auth-token <token>', 'Bearer token required on HTTP requests (Authorization: Bearer <token>); strongly recommended when binding --host 0.0.0.0 (env: CODEGRAPH_HTTP_AUTH_TOKEN)')
   .option('--no-watch', 'Disable the file watcher (no auto-sync; useful on slow filesystems like WSL2 /mnt drives)')
-  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean }) => {
+  .action(async (options: {
+    path?: string;
+    mcp?: boolean;
+    http?: boolean;
+    host?: string;
+    port?: number;
+    allowedOrigins?: string;
+    authToken?: string;
+    watch?: boolean;
+  }) => {
     const projectPath = options.path ? resolveProjectPath(options.path) : undefined;
 
     // Commander sets watch=false when --no-watch is passed. Route it through
@@ -2218,6 +2232,85 @@ program
     }
 
     try {
+      if (options.http) {
+        // Streamable HTTP mode: one process, one shared engine, one session
+        // per HTTP client (keyed by Mcp-Session-Id). This is the remote-
+        // deployment story — a centrally hosted CodeGraph any streamable-http
+        // MCP client (DSH, mcp-inspector, web tooling) can reach without a
+        // local install. No daemon convergence: the engine lives in this
+        // process, so the same writer-lock guard as direct mode applies.
+        const { McpHttpServer } = await import('../mcp/http-server');
+        const { MCPEngine } = await import('../mcp/engine');
+        const {
+          assertNoRebuild,
+          tryAcquireWriterLock,
+          writerLockHeldMessage,
+          releaseWriterLock,
+        } = await import('../mcp/writer-lock');
+        const { resolveServerRoot } = await import('../directory');
+
+        let writerLockRoot: string | null = null;
+        const guardRoot = resolveServerRoot(projectPath ?? process.cwd()).root;
+        if (guardRoot) {
+          assertNoRebuild(guardRoot);
+          const writer = tryAcquireWriterLock(guardRoot, 'http');
+          if (writer.kind === 'taken') {
+            error(writerLockHeldMessage(writer.existing, writer.pidPath));
+            process.exit(1);
+          }
+          writerLockRoot = guardRoot;
+        }
+
+        const engine = new MCPEngine({ queryPool: true });
+        const allowedOrigins = options.allowedOrigins
+          ? options.allowedOrigins.split(',').map((s) => s.trim()).filter(Boolean)
+          : undefined;
+        const authToken = process.env.CODEGRAPH_HTTP_AUTH_TOKEN || options.authToken;
+        const server = new McpHttpServer(engine, {
+          host: options.host,
+          port: options.port,
+          allowedOrigins,
+          authToken,
+          explicitProjectPath: projectPath ?? null,
+        });
+        const addr = await server.start();
+
+        // Long-lived server parity with direct mode: flush telemetry
+        // opportunistically and surface an available upgrade once.
+        getTelemetry().startInterval();
+        const { checkForUpdateInBackground } = await import('../upgrade/update-check');
+        checkForUpdateInBackground();
+
+        const loopback = ['127.0.0.1', 'localhost', '::1'].includes(addr.host);
+        if (!loopback && authToken === undefined) {
+          console.error(
+            '[CodeGraph MCP] WARNING: serving Streamable HTTP on a non-loopback address WITHOUT an auth token. ' +
+              'Anyone who can reach this port can read every indexed project and trigger index writes. ' +
+              'Restart with --auth-token <secret> (clients send it as "Authorization: Bearer <secret>").',
+          );
+        }
+        if (projectPath) {
+          // Warm the default project behind the listener so the first
+          // tools/call doesn't pay the open cost (initialize stays fast).
+          void engine.ensureInitialized(projectPath);
+        }
+        console.error(`[CodeGraph MCP] Streamable HTTP listening on http://${addr.host}:${addr.port}/mcp`);
+        console.error(`[CodeGraph MCP] default project: ${projectPath ?? process.cwd()} (per-call projectPath params still honored)`);
+        if (authToken !== undefined) {
+          console.error('[CodeGraph MCP] auth: bearer token required (Authorization: Bearer …)');
+        }
+
+        const shutdown = async (signal: string) => {
+          console.error(`[CodeGraph MCP] ${signal} received; shutting down.`);
+          await server.stop();
+          await engine.stop();
+          if (writerLockRoot) releaseWriterLock(writerLockRoot);
+          process.exit(0);
+        };
+        process.on('SIGINT', () => void shutdown('SIGINT'));
+        process.on('SIGTERM', () => void shutdown('SIGTERM'));
+        return;
+      }
       if (options.mcp) {
         // `serve --mcp` is the stdio MCP server an AI agent launches for itself,
         // not a command to run by hand. A human in a terminal would otherwise
@@ -2244,7 +2337,8 @@ program
         // Default: show info about MCP mode.
         // Use stderr so stdout stays clean for any piped/stdio usage.
         console.error(chalk.bold('\nCodeGraph MCP Server\n'));
-        console.error(chalk.blue(getGlyphs().info) + ' Use --mcp flag to start the MCP server');
+        console.error(chalk.blue(getGlyphs().info) + ' Use --mcp flag to start the MCP server (stdio)');
+        console.error(chalk.blue(getGlyphs().info) + ' Use --http flag to start it over Streamable HTTP (e.g. --http --host 0.0.0.0 --port 3916 --path <project>)');
         console.error('\nTo use with Claude Code, add to your MCP configuration:');
         console.error(chalk.dim(`
 {
