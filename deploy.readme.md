@@ -79,7 +79,7 @@ nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegra
 
 ```bash
 mkdir -p /tmp/log
-nohup codegraph git-sync --path ~/xds_dev_codegraph --branch dev \
+nohup codegraph git-sync ~/xds_dev_codegraph --branch dev \
   --interval-sec 60 --mode hard \
   >> /tmp/log/codegraph-git-sync.log 2>&1 &
 # 启动日志: [git-sync] <时间> watching <路径>: origin/dev every 60s (mode: hard)
@@ -287,7 +287,7 @@ SDK 自动协商）；SDK 客户端均容忍 GET 405 与会话过期 404（自�
 # 索引随代码自动更新: git-sync 每分钟 fetch+merge, serve 的 watcher 自动重索引, 无需人工。
 
 # 手动立即同步一次（等不了下一分钟时）:
-codegraph git-sync --path ~/xds_dev_codegraph --branch dev --mode hard --once
+codegraph git-sync ~/xds_dev_codegraph --branch dev --mode hard --once
 
 # git-sync 日志（只记变更, 无变更不打; /tmp/log 重启即弃）:
 tail -f /tmp/log/codegraph-git-sync.log
@@ -297,7 +297,7 @@ export PATH="$HOME/.local/bin:$PATH" CODEGRAPH_HTTP_AUTH_TOKEN=$(cat ~/.codegrap
 nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegraph \
   >> ~/codegraph-http.log 2>&1 &
 mkdir -p /tmp/log
-nohup codegraph git-sync --path ~/xds_dev_codegraph --branch dev \
+nohup codegraph git-sync ~/xds_dev_codegraph --branch dev \
   --interval-sec 60 --mode hard \
   >> /tmp/log/codegraph-git-sync.log 2>&1 &
 
