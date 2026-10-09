@@ -56,8 +56,10 @@ const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 3916;
 /** Idle sessions are swept after this long (spec leaves expiry to the server). */
 const DEFAULT_SESSION_IDLE_MS = 60 * 60 * 1000;
-/** How often the idle sweeper runs. */
+/** Longest gap between idle sweeps. */
 const SWEEP_INTERVAL_MS = 60 * 1000;
+/** Shortest gap, so a sub-minute idle window still expires close to on time. */
+const MIN_SWEEP_INTERVAL_MS = 1000;
 /** Request-body cap — tool calls carry symbol names, never megabytes. */
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 /** Server-side guard so a wedged handler can't hold an HTTP response forever.
@@ -76,6 +78,18 @@ class RequestTimeoutError extends Error {}
 export interface HttpListenAddress {
   host: string;
   port: number;
+}
+
+/**
+ * Sweep cadence for one idle window: at most {@link SWEEP_INTERVAL_MS} and at
+ * most half the window, so a short `sessionIdleMs` expires near its configured
+ * deadline instead of up to one sweep late.
+ *
+ * @param sessionIdleMs - Effective idle lifetime, always > 0 here.
+ * @returns Milliseconds between idle sweeps.
+ */
+function sweepIntervalFor(sessionIdleMs: number): number {
+  return Math.max(MIN_SWEEP_INTERVAL_MS, Math.min(SWEEP_INTERVAL_MS, Math.floor(sessionIdleMs / 2)));
 }
 
 export interface McpHttpServerOptions {
@@ -99,7 +113,14 @@ export interface McpHttpServerOptions {
    * trusted-local-client model to whoever can reach the port.
    */
   authToken?: string;
-  /** Idle session lifetime. Default 1 hour. */
+  /**
+   * Idle session lifetime in milliseconds. Default 1 hour; `0` or negative
+   * disables expiry, so sessions live until the client sends DELETE or the
+   * server stops. Expiry is what the `Mcp-Session-Id` recovery signal exists
+   * for, but a client that answers the 404 without re-initializing stays
+   * wedged, so operators of such clients turn it off
+   * (`serve --http --session-idle-sec 0`).
+   */
   sessionIdleMs?: number;
   /** Per-request server-side timeout. Default 10 minutes. */
   requestTimeoutMs?: number;
@@ -288,8 +309,10 @@ export class McpHttpServer {
         this.server = server;
         this.listenAddress = { host: this.opts.host, port: addr.port };
         this.closed = false; // start-after-stop must leave a stoppable server (B4)
-        this.sweeper = setInterval(() => this.sweepIdleSessions(), SWEEP_INTERVAL_MS);
-        this.sweeper.unref();
+        if (this.opts.sessionIdleMs > 0) {
+          this.sweeper = setInterval(() => this.sweepIdleSessions(), sweepIntervalFor(this.opts.sessionIdleMs));
+          this.sweeper.unref();
+        }
         resolve(this.listenAddress);
       });
     });
@@ -592,6 +615,7 @@ export class McpHttpServer {
   }
 
   private sweepIdleSessions(): void {
+    if (this.opts.sessionIdleMs <= 0) return; // expiry disabled: sessions live until DELETE or stop()
     const now = Date.now();
     for (const [id, entry] of this.sessions) {
       if (now - entry.transport.lastActivityMs > this.opts.sessionIdleMs) {
