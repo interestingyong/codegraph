@@ -2295,6 +2295,7 @@ program
   .option('--port <port>', 'Streamable HTTP port (default 3916)', (v: string) => parseInt(v, 10))
   .option('--allowed-origins <origins>', 'Comma-separated Origin values the HTTP transport accepts (* disables validation; loopback origins always pass)')
   .option('--auth-token <token>', 'Bearer token required on HTTP requests (Authorization: Bearer <token>); strongly recommended when binding --host 0.0.0.0 (env: CODEGRAPH_HTTP_AUTH_TOKEN)')
+  .option('--session-idle-sec <seconds>', 'Seconds an idle HTTP session survives before the sweeper drops it (default: 3600; 0 keeps sessions until the client sends DELETE or the server stops) (env: CODEGRAPH_HTTP_SESSION_IDLE_SEC)', (v: string) => parseInt(v, 10))
   .option('--no-watch', 'Disable the file watcher (no auto-sync; useful on slow filesystems like WSL2 /mnt drives)')
   .action(async (options: {
     path?: string;
@@ -2304,6 +2305,7 @@ program
     port?: number;
     allowedOrigins?: string;
     authToken?: string;
+    sessionIdleSec?: number;
     watch?: boolean;
   }) => {
     const projectPath = options.path ? resolveProjectPath(options.path) : undefined;
@@ -2332,6 +2334,27 @@ program
         } = await import('../mcp/writer-lock');
         const { resolveServerRoot } = await import('../directory');
 
+        // Session expiry is the one HTTP default that can wedge a client for
+        // good: the spec answers an expired Mcp-Session-Id with a 404
+        // "re-initialize" signal, and a client that ignores it keeps sending
+        // the stale id forever (DSH's mcp-client does). Operators can shorten
+        // the window or switch expiry off entirely with 0. Resolved before the
+        // writer lock so a bad value never leaves a lock behind.
+        const envIdleSec = process.env.CODEGRAPH_HTTP_SESSION_IDLE_SEC;
+        const idleSec = options.sessionIdleSec !== undefined
+          ? options.sessionIdleSec
+          : envIdleSec === undefined || envIdleSec.trim() === ''
+            ? undefined
+            : Number(envIdleSec);
+        if (idleSec !== undefined && (!Number.isInteger(idleSec) || idleSec < 0)) {
+          error(
+            `Invalid session idle window '${idleSec}' — use a whole number of seconds ` +
+              '(0 keeps sessions until the client sends DELETE or the server stops)',
+          );
+          process.exit(1);
+        }
+        const sessionIdleMs = idleSec === undefined ? undefined : idleSec * 1000;
+
         let writerLockRoot: string | null = null;
         const guardRoot = resolveServerRoot(projectPath ?? process.cwd()).root;
         if (guardRoot) {
@@ -2354,6 +2377,7 @@ program
           port: options.port,
           allowedOrigins,
           authToken,
+          sessionIdleMs,
           explicitProjectPath: projectPath ?? null,
         });
         const addr = await server.start();
@@ -2382,6 +2406,9 @@ program
         if (authToken !== undefined) {
           console.error('[CodeGraph MCP] auth: bearer token required (Authorization: Bearer …)');
         }
+        console.error(
+          `[CodeGraph MCP] session idle: ${idleSec === undefined ? '3600s (default)' : idleSec === 0 ? 'never expires' : `${idleSec}s`}`,
+        );
 
         const shutdown = async (signal: string) => {
           console.error(`[CodeGraph MCP] ${signal} received; shutting down.`);

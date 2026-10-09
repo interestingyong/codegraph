@@ -71,8 +71,13 @@ openssl rand -hex 16 > ~/.codegraph-http-token && chmod 600 ~/.codegraph-http-to
 export PATH="$HOME/.local/bin:$PATH"
 export CODEGRAPH_HTTP_AUTH_TOKEN=$(cat ~/.codegraph-http-token)
 nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegraph \
+  --session-idle-sec 0 \
   >> ~/codegraph-http.log 2>&1 &
 # 启动成功日志: [CodeGraph MCP] Streamable HTTP listening on http://0.0.0.0:3916/mcp
+# --session-idle-sec 0 = 会话不过期。DSH 的 mcp-client 收到过期 404 后只会重发旧
+# Mcp-Session-Id、不会重新 initialize，闲置 1 小时后该连接就永久卡死到重启 Host；
+# 不开 0 就得自己重启 DSH 才能恢复。代价是会话对象常驻内存（每个客户端一份）。
+# 也可用环境变量 CODEGRAPH_HTTP_SESSION_IDLE_SEC（不设 = 默认 3600 秒）。
 ```
 
 ### 2.5 启动 git-sync 镜像跟随服务（每分钟自动 pull）
@@ -98,14 +103,17 @@ hard 模式直接 reset 到远端 tip（镜像语义）。未跟踪文件（`.co
 ```
 codegraph serve --http [--host H] [--port P] [--path DIR]
                     [--allowed-origins o1,o2] [--auth-token T]
+                    [--session-idle-sec S]
 # token 也可用环境变量: CODEGRAPH_HTTP_AUTH_TOKEN
-# 默认: host 127.0.0.1, port 3916, 端点路径 /mcp
+# 会话闲置窗口也可用环境变量: CODEGRAPH_HTTP_SESSION_IDLE_SEC（秒，0 = 不过期）
+# 默认: host 127.0.0.1, port 3916, 端点路径 /mcp, 会话闲置 3600 秒
 ```
 
 | 行为 | 说明 |
 |---|---|
 | 单写者锁 | 同一项目同时只允许一个写者（direct/http 任意模式），第二个会拒绝启动 |
-| 会话 | initialize 签发 `Mcp-Session-Id`；闲置 1 小时过期，过期后 404，客户端自动重新 initialize |
+| 会话 | initialize 签发 `Mcp-Session-Id`；闲置超过 `--session-idle-sec` 秒（默认 3600）过期，之后该 id 返回 404 + `re-initialize`。按规范客户端应重新 initialize——DSH 的 mcp-client 不这么做，会一直重发旧 id 直到重启 Host，所以给这类客户端部署时用 `0` 关掉过期 |
+| 会话扫描 | 过期由后台 sweeper 回收，扫描间隔最多 60 秒、且不超过闲置窗口的一半（窗口 <2 分钟时按 1 秒扫） |
 | GET /mcp | 405（不开服务端推送流；roots/list 自动回退到 `--path` 项目） |
 | 批量请求 | JSON-RPC 数组 → 400（2025-06-18 已移除批量） |
 | 请求上限 | 单请求 10MB，超出 413 |
