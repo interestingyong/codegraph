@@ -17,7 +17,7 @@
 |---|---|
 | 服务器 | mcp153 / jump153（10.121.126.153，内网直达） |
 | 端点 | `http://10.121.126.153:3916/mcp` |
-| 认证 | Bearer token（必须）。存于服务器 `/home/lenovo/.codegraph-http-token`，下文以 `<TOKEN>` 代称 |
+| 认证 | **默认部署形态：无鉴权**（§2.4，不传 `--auth-token` 即无鉴权，适合可信内网）。mcp153 现网仍启用 Bearer（历史部署，token 存服务器 `/home/lenovo/.codegraph-http-token`，下文以 `<TOKEN>` 代称） |
 | 二进制 | `/home/lenovo/codegraph-linux-x64/`（自包含包，57MB，wasm 提取路径，无需原生内核） |
 | 命令 | `~/.local/bin/codegraph`（已入 PATH，版本 1.6.2） |
 | 索引项目 | `/home/lenovo/xds_dev_codegraph`（xds `origin/dev` 镜像） |
@@ -64,12 +64,10 @@ codegraph init ~/xds_dev_codegraph
 # 全量索引需几分钟；init 是唯一写者，完成前不要启动 serve（写锁互斥会拒绝启动）
 ```
 
-### 2.4 生成 token + 启动服务
+### 2.4 启动服务（默认：无鉴权）
 
 ```bash
-openssl rand -hex 16 > ~/.codegraph-http-token && chmod 600 ~/.codegraph-http-token
 export PATH="$HOME/.local/bin:$PATH"
-export CODEGRAPH_HTTP_AUTH_TOKEN=$(cat ~/.codegraph-http-token)
 nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegraph \
   --session-idle-sec 0 \
   >> ~/codegraph-http.log 2>&1 &
@@ -79,6 +77,24 @@ nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegra
 # 不开 0 就得自己重启 DSH 才能恢复。代价是会话对象常驻内存（每个客户端一份）。
 # 也可用环境变量 CODEGRAPH_HTTP_SESSION_IDLE_SEC（不设 = 默认 3600 秒）。
 ```
+
+**默认不启用鉴权**：不传 `--auth-token`、不设 `CODEGRAPH_HTTP_AUTH_TOKEN` 即无鉴权模式
+（`http-server.ts` 只在配置了 token 时才开 401 门禁）。可信内网推荐——客户端零配置负担，
+ curl/SDK 直接连。非回环绑定时启动日志会打一条醒目警告（仅提示，不影响运行）。
+
+#### 可选：启用 Bearer 鉴权（跨网段 / 共享环境建议）
+
+```bash
+openssl rand -hex 16 > ~/.codegraph-http-token && chmod 600 ~/.codegraph-http-token
+export PATH="$HOME/.local/bin:$PATH"
+export CODEGRAPH_HTTP_AUTH_TOKEN=$(cat ~/.codegraph-http-token)
+nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegraph \
+  --session-idle-sec 0 \
+  >> ~/codegraph-http.log 2>&1 &
+```
+
+启用后每个 POST/DELETE 都要求 `Authorization: Bearer <TOKEN>`，缺失/错误 → 401；
+客户端配置按 §4.11 的鉴权变体加一行。mcp153 现网即此形态。
 
 ### 2.5 启动 git-sync 镜像跟随服务（每分钟自动 pull）
 
@@ -96,7 +112,8 @@ hard 模式直接 reset 到远端 tip（镜像语义）。未跟踪文件（`.co
 
 ### 2.6 验证（见 §4.10 curl）
 
-无 token → 401；initialize → 200 + `Mcp-Session-Id`；tools/call explore 能查到真实结果。
+默认（无鉴权）：initialize → 200 + `Mcp-Session-Id`；tools/call explore 能查到真实结果。
+启用鉴权的部署另验：无 token / 错 token → 401。
 
 ## 3. 服务端参数与行为
 
@@ -117,17 +134,19 @@ codegraph serve --http [--host H] [--port P] [--path DIR]
 | GET /mcp | 405（不开服务端推送流；roots/list 自动回退到 `--path` 项目） |
 | 批量请求 | JSON-RPC 数组 → 400（2025-06-18 已移除批量） |
 | 请求上限 | 单请求 10MB，超出 413 |
-| 安全 | 默认只绑回环；对外绑定务必带 token；Origin 校验仅放行回环 + `--allowed-origins`；非回环且无 token 启动时打醒目警告 |
+| 鉴权 | **可选**。配置 `--auth-token`（或 `CODEGRAPH_HTTP_AUTH_TOKEN`）后所有 POST/DELETE 要求 Bearer；不配置 = 无鉴权（默认部署形态，内网直达场景够用） |
+| 安全 | 默认只绑回环；非回环且未配置 token 时启动打醒目警告（仅提示）；Origin 校验仅放行回环 + `--allowed-origins` |
 
 ## 4. 客户端接入样例
 
-以下 `<TOKEN>` = 服务器 `/home/lenovo/.codegraph-http-token` 的内容。
+**以下样例均按默认部署（无鉴权）写**——只有 URL，客户端零负担。若目标服务端启用了
+Bearer 鉴权（§2.4 可选模式，如 mcp153 现网），按 §4.11 差异表补 `Authorization` 头；
+`<TOKEN>` = 服务器 `/home/lenovo/.codegraph-http-token` 的内容。
 
 ### 4.1 Claude Code
 
 ```bash
-claude mcp add --transport http codegraph-http http://10.121.126.153:3916/mcp \
-  --header "Authorization: Bearer <TOKEN>"
+claude mcp add --transport http codegraph-http http://10.121.126.153:3916/mcp
 ```
 
 或项目级 `.mcp.json` / 用户级 `~/.claude.json`：
@@ -137,8 +156,7 @@ claude mcp add --transport http codegraph-http http://10.121.126.153:3916/mcp \
   "mcpServers": {
     "codegraph-http": {
       "type": "http",
-      "url": "http://10.121.126.153:3916/mcp",
-      "headers": { "Authorization": "Bearer <TOKEN>" }
+      "url": "http://10.121.126.153:3916/mcp"
     }
   }
 }
@@ -153,8 +171,7 @@ claude mcp add --transport http codegraph-http http://10.121.126.153:3916/mcp \
   "mcpServers": {
     "codegraph-http": {
       "type": "http",
-      "url": "http://10.121.126.153:3916/mcp",
-      "headers": { "Authorization": "Bearer <TOKEN>" }
+      "url": "http://10.121.126.153:3916/mcp"
     }
   }
 }
@@ -168,8 +185,7 @@ claude mcp add --transport http codegraph-http http://10.121.126.153:3916/mcp \
 {
   "mcpServers": {
     "codegraph-http": {
-      "url": "http://10.121.126.153:3916/mcp",
-      "headers": { "Authorization": "Bearer <TOKEN>" }
+      "url": "http://10.121.126.153:3916/mcp"
     }
   }
 }
@@ -178,8 +194,7 @@ claude mcp add --transport http codegraph-http http://10.121.126.153:3916/mcp \
 ### 4.4 Codex CLI
 
 `~/.codex/config.toml`。注意：顶级 `experimental_use_rmcp_client = true` 缺了
-streamable-http 加载不了；老写法 `[mcp_servers.X.headers]` 在 Codex 0.130+ 会被
-静默忽略，用 `bearer_token_env_var`（推荐）或 `http_headers`：
+streamable-http 加载不了：
 
 ```toml
 experimental_use_rmcp_client = true
@@ -187,16 +202,12 @@ experimental_use_rmcp_client = true
 [mcp_servers.codegraph-http]
 type = "streamable-http"
 url = "http://10.121.126.153:3916/mcp"
-bearer_token_env_var = "CODEGRAPH_HTTP_TOKEN"
 ```
-
-启动 Codex 的 shell 先 `export CODEGRAPH_HTTP_TOKEN=<TOKEN>`。
-（也可写死 `http_headers = { "Authorization" = "Bearer <TOKEN>" }`）
 
 ### 4.5 opencode
 
 `~/.config/opencode/opencode.json` 或项目根 `opencode.json`。键是 `mcp`（不是
-`mcpServers`）；用 token 时把 `oauth` 关掉，否则会先走 OAuth 发现流程：
+`mcpServers`）；`oauth: false` 跳过 OAuth 发现流程：
 
 ```json
 {
@@ -206,8 +217,7 @@ bearer_token_env_var = "CODEGRAPH_HTTP_TOKEN"
       "type": "remote",
       "url": "http://10.121.126.153:3916/mcp",
       "enabled": true,
-      "oauth": false,
-      "headers": { "Authorization": "Bearer <TOKEN>" }
+      "oauth": false
     }
   }
 }
@@ -225,8 +235,6 @@ profile 的 `cordis.patch.yml`：
         serverName: codegraph-http
         transport: streamable-http
         url: 'http://10.121.126.153:3916/mcp'
-        headers:
-          Authorization: 'Bearer <TOKEN>'
 ```
 
 ### 4.7 MCP Inspector（调试/验证）
@@ -234,8 +242,7 @@ profile 的 `cordis.patch.yml`：
 ```bash
 npx @modelcontextprotocol/inspector
 # UI 里: Transport Type = Streamable HTTP
-#        URL = http://10.121.126.153:3916/mcp
-#        Headers 添加 Authorization: Bearer <TOKEN> → Connect
+#        URL = http://10.121.126.153:3916/mcp → Connect
 ```
 
 ### 4.8 TypeScript SDK
@@ -246,7 +253,6 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 const transport = new StreamableHTTPClientTransport(
   new URL('http://10.121.126.153:3916/mcp'),
-  { requestInit: { headers: { Authorization: 'Bearer <TOKEN>' } } },
 );
 const client = new Client({ name: 'my-client', version: '1.0.0' });
 await client.connect(transport);
@@ -259,10 +265,7 @@ const { tools } = await client.listTools();
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-async with streamablehttp_client(
-    "http://10.121.126.153:3916/mcp",
-    headers={"Authorization": "Bearer <TOKEN>"},
-) as (read, write, _):
+async with streamablehttp_client("http://10.121.126.153:3916/mcp") as (read, write, _):
     async with ClientSession(read, write) as session:
         await session.initialize()
         tools = await session.list_tools()
@@ -274,17 +277,31 @@ async with streamablehttp_client(
 # 1) initialize 拿会话 id
 curl -sS -D headers.txt -X POST http://10.121.126.153:3916/mcp \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <TOKEN>' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 SID=$(grep -i 'mcp-session-id' headers.txt | awk '{print $2}' | tr -d '\r')
 
 # 2) 真实查询
 curl -sS -X POST http://10.121.126.153:3916/mcp \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <TOKEN>' \
   -H "Mcp-Session-Id: $SID" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"codegraph_explore","arguments":{"query":"nfdsd main daemon startup"}}}'
 ```
+
+### 4.11 启用鉴权时的客户端差异（服务端按 §2.4 可选模式配置时）
+
+各客户端在 §4.1–4.10 的基础上补一行；`<TOKEN>` = 服务器 `/home/lenovo/.codegraph-http-token` 内容：
+
+| 客户端 | 补充 |
+|---|---|
+| Claude Code CLI | 追加 `--header "Authorization: Bearer <TOKEN>"` |
+| Claude Code / Desktop / Cursor JSON | 加 `"headers": { "Authorization": "Bearer <TOKEN>" }` |
+| Codex CLI | `bearer_token_env_var = "CODEGRAPH_HTTP_TOKEN"`（启动 shell 先 `export CODEGRAPH_HTTP_TOKEN=<TOKEN>`；老 `[mcp_servers.X.headers]` 写法 0.130+ 被静默忽略，别用）或写死 `http_headers = { "Authorization" = "Bearer <TOKEN>" }` |
+| opencode | `oauth: false` 保持，再加 `"headers": { "Authorization": "Bearer <TOKEN>" }` |
+| DSH | config 下加 `headers: { Authorization: 'Bearer <TOKEN>' }` |
+| Inspector | Headers 栏加 `Authorization: Bearer <TOKEN>` |
+| TS SDK | 第二参 `{ requestInit: { headers: { Authorization: 'Bearer <TOKEN>' } } }` |
+| Python SDK | `streamablehttp_client(url, headers={"Authorization": "Bearer <TOKEN>"})` |
+| curl | 每条请求加 `-H 'Authorization: Bearer <TOKEN>'` |
 
 对客户端透明、排障时有用：initialize 返回协议版本 `2024-11-05`（与传输版本独立，
 SDK 自动协商）；SDK 客户端均容忍 GET 405 与会话过期 404（自动重连）。
@@ -300,10 +317,11 @@ codegraph git-sync ~/xds_dev_codegraph --branch dev --mode hard --once
 # git-sync 日志（只记变更, 无变更不打; /tmp/log 重启即弃）:
 tail -f /tmp/log/codegraph-git-sync.log
 
-# 服务重启（如机器重启后）:
-export PATH="$HOME/.local/bin:$PATH" CODEGRAPH_HTTP_AUTH_TOKEN=$(cat ~/.codegraph-http-token)
+# 服务重启（如机器重启后）——默认无鉴权:
+export PATH="$HOME/.local/bin:$PATH"
 nohup codegraph serve --http --host 0.0.0.0 --port 3916 --path ~/xds_dev_codegraph \
   >> ~/codegraph-http.log 2>&1 &
+# 启用了鉴权的部署（如 mcp153）额外: export CODEGRAPH_HTTP_AUTH_TOKEN=$(cat ~/.codegraph-http-token)
 mkdir -p /tmp/log
 nohup codegraph git-sync ~/xds_dev_codegraph --branch dev \
   --interval-sec 60 --mode hard \
